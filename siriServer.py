@@ -1,24 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-try:
-    import biplist
-except ImportError:
-    print "You need to install biplist package on your system! e.g. \"sudo easy_install biplist\""
-    exit(-1)
-
-try:
-    from M2Crypto import BIO, RSA, X509
-except ImportError:
-    print "You must install M2Crypto on your system! (this might require openssl and SWIG) e.g. \"sudo easy_install m2crypto\""
-    exit(-1)
-
-import sys
-if sys.version_info < (2, 6):
-    print "You must use python 2.6 or greater"
-    exit(-1)
-
-import socket, ssl, zlib, binascii, time, select, struct, uuid, json, asyncore, re, threading, logging, pprint, sqlite3
+import socket, ssl, sys, zlib, binascii, time, select, struct, biplist, uuid, json, asyncore, re, threading, logging, pprint, sqlite3
 from optparse import OptionParser
 from email.utils import formatdate
 
@@ -28,6 +11,8 @@ import db
 from db import Assistant
 
 import PluginManager
+
+from M2Crypto import BIO, RSA, X509
 
 from siriObjects import speechObjects, baseObjects, uiObjects, systemObjects
 from siriObjects.baseObjects import ObjectIsCommand
@@ -40,9 +25,9 @@ from sslDispatcher import ssl_dispatcher
 import signal, os
 
 class HandleConnection(ssl_dispatcher):
-    __not_recognized = {"de-DE": u"Entschuldigung, ich verstehe \"{0}\" nicht.", "en-US": u"Sorry I don't understand {0}"}
+    __not_recognized = {"de-DE": u"Entschuldigung, ich verstehe \"{0}\" nicht.", "en-US": u"Sorry I don't understand {0}.\nConfidence: {1}%"}
     __websearch = {"de-DE": u"Websuche", "en-US": u"Websearch"}
-    def __init__(self, conn):
+    def __init__(self, conn, lang):
         asyncore.dispatcher_with_send.__init__(self, conn)
         
         self.ssled = False
@@ -71,7 +56,8 @@ class HandleConnection(ssl_dispatcher):
         self.current_location = None
         self.plugin_lastAceId = None
         self.logger = logging.getLogger("logger")
-    
+        self.lang = lang    
+
     def handle_ssl_established(self):                
         self.ssled = True
 
@@ -157,7 +143,7 @@ class HandleConnection(ssl_dispatcher):
                 best_match = best_match[0].upper()+best_match[1:]
                 best_match_confidence = possible_matches[0]['confidence']
                 self.logger.info(u"Best matching result: \"{0}\" with a confidence of {1}%".format(best_match, round(float(best_match_confidence)*100,2)))
-                # construct a SpeechRecognized
+		# construct a SpeechRecognized
                 token = speechObjects.Token(best_match, 0, 0, 1000.0, True, True)
                 interpretation = speechObjects.Interpretation([token])
                 phrase = speechObjects.Phrase(lowConfidence=False, interpretations=[interpretation])
@@ -166,8 +152,9 @@ class HandleConnection(ssl_dispatcher):
                 
                 if not dictation:
                     if self.current_running_plugin == None:
-                        plugin = PluginManager.getPluginForImmediateExecution(self.assistant.assistantId, best_match, self.assistant.language, (self.send_object, self.send_plist, self.assistant, self.current_location))
-                        if plugin != None:
+                        (clazz, method) = PluginManager.getPlugin(best_match, self.assistant.language)
+                        if clazz != None and method != None:
+                            plugin = clazz(method, best_match, self.assistant.language, self.send_object, self.send_plist, self.assistant, self.current_location)
                             plugin.refId = requestId
                             plugin.connection = self
                             self.current_running_plugin = plugin
@@ -177,7 +164,7 @@ class HandleConnection(ssl_dispatcher):
                             self.send_object(recognized)
                             view = uiObjects.AddViews(requestId)
                             errorText = HandleConnection.__not_recognized[self.assistant.language] if self.assistant.language in HandleConnection.__not_recognized else HandleConnection.__not_recognized["en-US"]
-                            view.views += [uiObjects.AssistantUtteranceView(errorText.format(best_match), errorText.format(best_match))]
+                            view.views += [uiObjects.AssistantUtteranceView(errorText.format(best_match, round(float(best_match_confidence)*100,2)), errorText.format(best_match, round(float(best_match_confidence)*100,2)))]
                             websearchText = HandleConnection.__websearch[self.assistant.language] if self.assistant.language in HandleConnection.__websearch else HandleConnection.__websearch["en-US"]
                             button = uiObjects.Button(text=websearchText)
                             cmd = systemObjects.SendCommands()
@@ -217,9 +204,8 @@ class HandleConnection(ssl_dispatcher):
                             # don't change it's refId, further requests must reference last FinishSpeech
                             self.logger.info("Forwarding object to plugin")
                             self.plugin_lastAceId = None
-                            self.current_running_plugin.response = reqObject if reqObject['class'] != "StartRequest" else reqObject['properties']['utterance']
+                            self.current_running_plugin.response = reqObject
                             self.current_running_plugin.waitForResponse.set()
-                            continue
                 
                 if ObjectIsCommand(reqObject, StartSpeechRequest) or ObjectIsCommand(reqObject, StartSpeechDictation):
                     self.logger.info("New start of speech received")
@@ -281,10 +267,8 @@ class HandleConnection(ssl_dispatcher):
                     del self.speech[finishSpeech.refId]
                     
                     self.logger.info("Sending flac to google for recognition")
-                    try:
-                        self.httpClient.make_google_request(flacBin, finishSpeech.refId, dictation, language=self.assistant.language, allowCurses=True)
-                    except AttributeError, TypeError:
-                        self.logger.info("Unable to find language record for this assistant. Try turning Siri off and then back on.")
+                    self.httpClient.make_google_request(flacBin, finishSpeech.refId, dictation, language=self.assistant.language, allowCurses=True)
+                        
                         
                 elif ObjectIsCommand(reqObject, CancelRequest):
                         # this is probably called when we need to kill a plugin
@@ -297,7 +281,9 @@ class HandleConnection(ssl_dispatcher):
 
                 elif ObjectIsCommand(reqObject, GetSessionCertificate):
                     getSessionCertificate = GetSessionCertificate(reqObject)
-                    response = GetSessionCertificateResponse(getSessionCertificate.aceId, caCert.as_der(), serverCert.as_der())
+                    response = GetSessionCertificateResponse(getSessionCertificate.aceId)
+                    response.caCert = caCert.as_der()
+                    response.sessionCert = serverCert.as_der()
                     self.send_object(response)
 
                 elif ObjectIsCommand(reqObject, CreateSessionInfoRequest):
@@ -334,7 +320,11 @@ class HandleConnection(ssl_dispatcher):
                         objProperties = reqObject['properties'] 
                         self.assistant.censorSpeech = objProperties['censorSpeech']
                         self.assistant.timeZoneId = objProperties['timeZoneId']
-                        self.assistant.language = objProperties['language']
+                        #self.assistant.language = objProperties['language']
+			if self.lang != None:
+				self.assistant.language = self.lang
+			else:
+				self.assistant.language = objProperties['language']
                         self.assistant.region = objProperties['region']
                         c.execute("update assistants set assistant = ? where assistantId = ?", (self.assistant, self.assistant.assistantId))
                         self.dbConnection.commit()
@@ -402,11 +392,6 @@ class HandleConnection(ssl_dispatcher):
         self.output_buffer += self.compressor.compress(self.unzipped_output_buffer)
         #make sure everything is compressed
         self.output_buffer += self.compressor.flush(zlib.Z_SYNC_FLUSH)
-        ratio = float(len(self.unzipped_output_buffer))/float(len(self.output_buffer)) - 1
-        if ratio < 0:
-            self.logger.debug("Blowed up by {0:.2f} bytes ({1:.2%}) due to compression".format(-1*ratio*len(self.unzipped_output_buffer),ratio))
-        else:
-            self.logger.debug("Saved {0:.2f} bytes ({1:.2%}) using compression".format(ratio*len(self.unzipped_output_buffer), ratio))
         self.unzipped_output_buffer = ""
 
         self.flush_output_buffer()
@@ -418,12 +403,13 @@ class HandleConnection(ssl_dispatcher):
 
 class SiriServer(asyncore.dispatcher):
 
-    def __init__(self, host, port):
+    def __init__(self, host, port, lang):
         asyncore.dispatcher.__init__(self)
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
         self.set_reuse_addr()
         self.bind((host, port))
         self.listen(5)
+	self.lang = lang
         logging.getLogger("logger").info("Listening on port {0}".format(port))
         signal.signal(signal.SIGTERM, self.handler)
    
@@ -440,7 +426,7 @@ class SiriServer(asyncore.dispatcher):
         else:
             sock, addr = pair
             logging.getLogger("logger").info('Incoming connection from {0}'.format(repr(addr)))
-            handler = HandleConnection(sock)
+            handler = HandleConnection(sock, self.lang)
 
 # load the certificates
 caCertFile = open('OrigAppleSubCACert.der')
@@ -464,6 +450,7 @@ log_levels = {'debug':logging.DEBUG,
 parser = OptionParser()
 parser.add_option('-l', '--loglevel', default='info', dest='logLevel', help='This sets the logging level you have these options: debug, info, warning, error, critical \t\tThe standard value is info')
 parser.add_option('-p', '--port', default=443, type='int', dest='port', help='This options lets you use a custom port instead of 443 (use a port > 1024 to run as non root user)')
+parser.add_option('--lang', default=None, dest='lang', help='Force server to run with the language')
 parser.add_option('--logfile', default=None, dest='logfile', help='Log to a file instead of stdout.')
 (options, args) = parser.parse_args()
 
@@ -490,7 +477,7 @@ PluginManager.load_plugins()
 
 #start server
 x.info("Starting Server")
-server = SiriServer('', options.port)
+server = SiriServer('', options.port, options.lang)
 try:
     asyncore.loop()
 except (asyncore.ExitNow, KeyboardInterrupt, SystemExit):
