@@ -9,7 +9,7 @@ from plugin import *
 class talkToMe(Plugin):   
         
     @register("de-DE", ".*Dein.*Status.*")
-    @register("en-GB", ".*Your.*Status.*")
+    @register("en-US", "Your Status.*")
     def ttm_uptime_status(self, speech, language):
         uptime = os.popen("uptime").read()
         if language == 'de-DE':
@@ -18,20 +18,21 @@ class talkToMe(Plugin):
         else:
             self.say('Here is the status:')
             self.say(uptime, ' ')
-        self.complete_request()     
-    
-    
-    @register("de-DE", "(Welcher Tag.*)|(Welches Datum.*)")
-    @register("en-GB", "(What Day.*)|(What.*Date.*)")
-    
-    def ttm_say_date(self, speech, language):
-        now = date.today()
-        if language == 'de-DE':
-            locale.setlocale(locale.LC_ALL, 'de_DE')
-            result=now.strftime("Heute ist %A, der %d.%m.%Y (Kalenderwoche: %W)")
-            self.say(result)
-        else:
-            locale.setlocale(locale.LC_ALL, 'en_US')
-            result=now.strftime("Today is %A the %d.%m.%Y (Week: %W)")
-            self.say(result)
         self.complete_request()
+
+    @register("en-US", "ip address")
+    def ttm_uptime_status(self, speech, language):
+        uptime = os.popen("ifconfig").read()
+        if language == 'en-US':
+            self.say('Here is the status:')
+            self.say(uptime, ' ')
+        self.complete_request()
+
+
+    @register("en-US", ".*restart server.*")
+    def ttm_uptime_status(self, speech, language):
+        if language == 'en-US':
+            self.say('Server is restarting, please wait...')
+	    uptime = os.popen("service siriserver restart").read()
+        self.complete_request()
+
