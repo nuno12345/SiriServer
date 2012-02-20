@@ -40,6 +40,6 @@ class ChangeLanguage(Plugin):
                         self.assistant.language = "fr-FR"
                         self.complete_request()
                 else:
-                        self.say('Language not found')
+                        self.say('Linguagem nao encontrada')
                         self.complete_request()
 
